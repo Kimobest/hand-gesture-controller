@@ -290,13 +290,13 @@ class HandControllerApp:
         self.camera_toast_time = time.time()
 
     def toggle_open_palm_mode(self):
-        """التبديل الفوري بين أوضاع الكف: ضهر اليد (BACK) -> وش اليد (FRONT) -> الجهتين (BOTH)"""
-        modes = ["BACK", "FRONT", "BOTH"]
+        """التبديل الفوري بين أوضاع الكف: وش اليد (FRONT) -> ضهر اليد (BACK) -> الجهتين (BOTH)"""
+        modes = ["FRONT", "BACK", "BOTH"]
         idx = modes.index(self.open_palm_mode) if self.open_palm_mode in modes else 0
         self.open_palm_mode = modes[(idx + 1) % len(modes)]
         labels = {
+            "FRONT": "وش اليد (Palm Front)",
             "BACK": "ضهر اليد (Back of Hand)",
-            "FRONT": "وش اليد (Palm / Front)",
             "BOTH": "الجهتين معاً (Both Sides)"
         }
         self.camera_toast_text = f"Mode: {self.open_palm_mode} ({labels[self.open_palm_mode]})"
@@ -326,33 +326,32 @@ class HandControllerApp:
     @staticmethod
     def get_hand_orientation(landmarks, mediapipe_handedness):
         """
-        حساب المتجه العمودي (Normal Vector) لتحديد ما إذا كان المعروض هو:
-        - 'FRONT' (وش اليد / Palm)
+        تحديد ما إذا كان المعروض هو:
+        - 'FRONT' (وش اليد / كف اليد Palm Front)
         - 'BACK'  (ضهر اليد / Back of Hand)
-        مع مراعاة وضع المرآة الأفقي (cv2.flip) وانعكاس تصنيف اليدين.
+        في الكاميرا المنعكسة (cv2.flip) عبر المقارنة الهندسية لموضع الخنصر (17) والسبابة (5):
+        - اليد اليمنى (تصنفها MediaPipe كـ 'Left'):
+          وش اليد -> الخنصر يمين السبابة (landmarks[17].x > landmarks[5].x)
+          ضهر اليد -> الخنصر يسار السبابة (landmarks[17].x < landmarks[5].x)
+        - اليد اليسرى (تصنفها MediaPipe كـ 'Right'):
+          وش اليد -> الخنصر يسار السبابة (landmarks[17].x < landmarks[5].x)
+          ضهر اليد -> الخنصر يمين السبابة (landmarks[17].x > landmarks[5].x)
         """
-        v1_x = landmarks[5].x - landmarks[0].x
-        v1_y = landmarks[5].y - landmarks[0].y
-        v2_x = landmarks[17].x - landmarks[0].x
-        v2_y = landmarks[17].y - landmarks[0].y
-        cross_z = (v1_x * v2_y) - (v1_y * v2_x)
+        idx_x = landmarks[5].x
+        pnk_x = landmarks[17].x
 
-        # في وضع المرآة: MediaPipe 'Left' = اليد اليمنى الحقيقية، 'Right' = اليد اليسرى الحقيقية
         if mediapipe_handedness == "Left":  # اليد اليمنى في المرآة
-            is_front = cross_z > 0.0005
-            is_back = cross_z < -0.0005
+            is_front = pnk_x > idx_x
         elif mediapipe_handedness == "Right":  # اليد اليسرى في المرآة
-            is_front = cross_z < -0.0005
-            is_back = cross_z > 0.0005
+            is_front = pnk_x < idx_x
         else:
-            if landmarks[4].x < landmarks[17].x:
-                is_front = cross_z > 0.0005
-                is_back = cross_z < -0.0005
+            thumb_x = landmarks[4].x
+            if thumb_x < pnk_x:
+                is_front = pnk_x > idx_x
             else:
-                is_front = cross_z < -0.0005
-                is_back = cross_z > 0.0005
+                is_front = pnk_x < idx_x
 
-        return ("FRONT" if is_front else ("BACK" if is_back else "UNKNOWN")), cross_z
+        return "FRONT" if is_front else "BACK"
 
     @staticmethod
     def are_fingers_open(landmarks):
@@ -531,7 +530,7 @@ class HandControllerApp:
                     hand_name = recognition_result.handedness[0][0].category_name
 
                 # فحص اتجاه اليد (FRONT vs BACK) وفحص امتداد الأصابع
-                detected_side, cross_z = self.get_hand_orientation(hand_lms, hand_name)
+                detected_side = self.get_hand_orientation(hand_lms, hand_name)
                 all_open, four_open = self.are_fingers_open(hand_lms)
 
                 # مطابقة اتجاه اليد مع الوضع المختار (BACK أو FRONT أو BOTH)

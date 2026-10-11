@@ -55,11 +55,11 @@ MIN_TRACKING_CONFIDENCE = 0.65
 MIN_GESTURE_SCORE = 0.60
 
 # جهة تفعيل حركة الكف المفتوح (Open_Palm - تشغيل/إيقاف الميديا):
-# 'BACK'  -> تعمل بضهر اليد فقط (Back of Hand) [الوضع الافتراضي بناءً على طلبك]
-# 'FRONT' -> تعمل بوش اليد فقط (Palm / Front)
+# 'FRONT' -> تعمل بوش اليد فقط (Palm / Front) [الوضع الافتراضي بناءً على طلبك]
+# 'BACK'  -> تعمل بضهر اليد فقط (Back of Hand)
 # 'BOTH'  -> تعمل بالجهتين معاً (وش أو ضهر اليد) بدون أي حجب
 # [ملاحظة: يمكنك التبديل الفوري بين هذه الأوضاع في أي وقت بالضغط على حرف T في الكيبورد]
-OPEN_PALM_TRIGGER_SIDE = "BACK"
+OPEN_PALM_TRIGGER_SIDE = "FRONT"
 
 # مسار نموذج MediaPipe Gesture Recognizer
 MODEL_PATH = os.path.join(BASE_DIR, "gesture_recognizer.task")
