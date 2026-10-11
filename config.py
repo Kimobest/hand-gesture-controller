@@ -50,9 +50,14 @@ FLIP_HORIZONTAL = True  # وضع المرآة لتسهيل التحكم الطب
 NUM_HANDS = 1
 
 # حساسية نموذج الذكاء الاصطناعي (من 0.0 إلى 1.0)
-MIN_DETECTION_CONFIDENCE = 0.70
-MIN_TRACKING_CONFIDENCE = 0.70
-MIN_GESTURE_SCORE = 0.70
+MIN_DETECTION_CONFIDENCE = 0.65
+MIN_TRACKING_CONFIDENCE = 0.65
+MIN_GESTURE_SCORE = 0.60
+
+# تفعيل شرط وش اليد (Palm Facing Camera) لحركة الكف المفتوح (Open_Palm)
+# عند تفعيله، لن يتم تنفيذ أمر الكف المفتوح (تشغيل/إيقاف الميديا) إلا عند إظهار وش اليد (Palm)
+# وسيتم حجب ومنع تنفيذه تماماً إذا كان المعروض ضهر اليد (Back of Hand)
+REQUIRE_PALM_FACING_FOR_OPEN_PALM = True
 
 # مسار نموذج MediaPipe Gesture Recognizer
 MODEL_PATH = os.path.join(BASE_DIR, "gesture_recognizer.task")

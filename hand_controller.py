@@ -306,8 +306,49 @@ class HandControllerApp:
             cv2.circle(frame, (cx, cy), radius + 2, (0, 0, 0), -1, cv2.LINE_AA)
             cv2.circle(frame, (cx, cy), radius, (255, 255, 255), -1, cv2.LINE_AA)
 
-    def draw_hud(self, frame, current_gesture, score, is_triggering):
-        """رسم واجهة تفاعلية شاشية مستقبلية (HUD Overlay)"""
+    @staticmethod
+    def check_palm_orientation(landmarks, handedness_label):
+        """
+        حساب المتجه العمودي (Palm Normal Vector) لتحديد ما إذا كان وش اليد (Palm)
+        مواجهاً للكاميرا أو ضهر اليد (Back of Hand).
+        يعتمد على الجداء الاتجاهي (Cross Product) بين معصم اليد (0) ومفصل السبابة (5) ومفصل الخنصر (17).
+        """
+        v1_x = landmarks[5].x - landmarks[0].x
+        v1_y = landmarks[5].y - landmarks[0].y
+        v2_x = landmarks[17].x - landmarks[0].x
+        v2_y = landmarks[17].y - landmarks[0].y
+        cross_z = (v1_x * v2_y) - (v1_y * v2_x)
+
+        if handedness_label == "Right":
+            is_palm = cross_z > 0.0008
+        elif handedness_label == "Left":
+            is_palm = cross_z < -0.0008
+        else:
+            if landmarks[4].x < landmarks[17].x:
+                is_palm = cross_z > 0.0008
+            else:
+                is_palm = cross_z < -0.0008
+
+        return is_palm, cross_z
+
+    @staticmethod
+    def are_fingers_open(landmarks):
+        """فحص هندسي للمفاصل للتأكد مما إذا كانت أصابع اليد مفرودة بالكامل (Open Hand)."""
+        def d(i, j):
+            return ((landmarks[i].x - landmarks[j].x) ** 2 + (landmarks[i].y - landmarks[j].y) ** 2) ** 0.5
+
+        index_ext = d(8, 0) > d(6, 0) * 1.15
+        middle_ext = d(12, 0) > d(10, 0) * 1.15
+        ring_ext = d(16, 0) > d(14, 0) * 1.15
+        pinky_ext = d(20, 0) > d(18, 0) * 1.15
+        thumb_ext = d(4, 17) > d(2, 17) * 1.10
+
+        all_five = (index_ext and middle_ext and ring_ext and pinky_ext) and (thumb_ext or d(4, 0) > d(2, 0) * 1.15)
+        four_fingers = (index_ext and middle_ext and ring_ext and pinky_ext)
+        return all_five, four_fingers
+
+    def draw_hud(self, frame, current_gesture, score, is_triggering, hand_name="", palm_state="NONE"):
+        """رسم واجهة تفاعلية شاشية مستقبلية (HUD Overlay) مع توضيح حالة وش اليد vs ضهر اليد"""
         h, w, _ = frame.shape
 
         # الشريط العلوي والسفلي الشفاف
@@ -329,7 +370,11 @@ class HandControllerApp:
 
             cv2.putText(frame, f"{emoji} {label.upper()}", (20, 32),
                         cv2.FONT_HERSHEY_DUPLEX, 0.75, color, 2, cv2.LINE_AA)
-            cv2.putText(frame, f"Conf: {int(score * 100)}% | Gesture Controller", (20, 58),
+
+            sub_info = f"Conf: {int(score * 100)}%"
+            if palm_state == "PALM_FRONT":
+                sub_info += " | PALM (Front) [OK]"
+            cv2.putText(frame, sub_info, (20, 58),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (190, 190, 200), 1, cv2.LINE_AA)
 
             # شريط مؤقت الـ Cooldown
@@ -348,8 +393,17 @@ class HandControllerApp:
             if is_triggering:
                 cv2.rectangle(frame, (0, 0), (w, h), color, 6)
         else:
-            cv2.putText(frame, "READY | Show Hand Gesture", (20, 42),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.65, (160, 160, 170), 2, cv2.LINE_AA)
+            if palm_state == "BACK_BLOCKED":
+                cv2.putText(frame, "BACK OF HAND (Blocked - Show Palm)", (20, 32),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.62, (0, 140, 255), 2, cv2.LINE_AA)
+                cv2.putText(frame, "Ignored: Back of hand facing cam. Turn hand to PALM.", (20, 58),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 200, 255), 1, cv2.LINE_AA)
+            elif palm_state == "PALM_FRONT":
+                cv2.putText(frame, "PALM DETECTED | Ready for action", (20, 42),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.65, (0, 255, 128), 2, cv2.LINE_AA)
+            else:
+                cv2.putText(frame, "READY | Show Hand Gesture", (20, 42),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.65, (160, 160, 170), 2, cv2.LINE_AA)
 
         # معدل الإطارات (FPS) وحالة الكاميرا
         cv2.putText(frame, f"FPS: {int(self.fps)}", (w - 110, 30),
@@ -436,18 +490,55 @@ class HandControllerApp:
             current_gesture = "None"
             score = 0.0
             is_triggering = False
+            hand_name = "Right"
+            palm_state = "NONE"
 
-            if recognition_result.gestures and len(recognition_result.gestures) > 0:
-                top_gesture = recognition_result.gestures[0][0]
-                current_gesture = top_gesture.category_name
-                score = top_gesture.score
+            if recognition_result.hand_landmarks and len(recognition_result.hand_landmarks) > 0:
+                hand_lms = recognition_result.hand_landmarks[0]
 
-                # رسم هيكل اليد
-                if recognition_result.hand_landmarks and len(recognition_result.hand_landmarks) > 0:
-                    hand_lms = recognition_result.hand_landmarks[0]
+                if recognition_result.handedness and len(recognition_result.handedness) > 0:
+                    hand_name = recognition_result.handedness[0][0].category_name
+
+                # فحص اتجاه اليد (وش اليد vs ضهر اليد) وفحص امتداد الأصابع
+                is_palm, cross_z = self.check_palm_orientation(hand_lms, hand_name)
+                all_open, four_open = self.are_fingers_open(hand_lms)
+                palm_state = "PALM_FRONT" if is_palm else "BACK_BLOCKED"
+
+                # قراءة الحركة من نموذج MediaPipe
+                if recognition_result.gestures and len(recognition_result.gestures) > 0:
+                    top_gesture = recognition_result.gestures[0][0]
+                    current_gesture = top_gesture.category_name
+                    score = top_gesture.score
+
+                # تدقيق حركة الكف المفتوح (Open_Palm) لتعمل فقط بوش اليد
+                require_palm = getattr(config, "REQUIRE_PALM_FACING_FOR_OPEN_PALM", True)
+
+                if current_gesture == "Open_Palm":
+                    if require_palm and not is_palm:
+                        # تم التعرف على الكف لكن المعروض هو ضهر اليد -> حجب فوري للأمر
+                        current_gesture = "None"
+                        score = 0.0
+                    elif is_palm:
+                        # وش اليد مواجه للكاميرا -> تأكيد الحركة بنسبة ثقة عالية
+                        score = max(score, 0.95)
+                elif (all_open or four_open) and is_palm:
+                    # الأصابع مفرودة ووش اليد مواجه للكاميرا -> تفعيل Open_Palm حتى لو تردد النموذج
+                    current_gesture = "Open_Palm"
+                    score = 0.95
+                elif (all_open or four_open) and not is_palm and require_palm:
+                    # الأصابع مفرودة بضهر اليد -> حجب كامل
+                    current_gesture = "None"
+                    score = 0.0
+
+                # تحديد لون رسم هيكل اليد
+                if current_gesture == "Open_Palm":
+                    g_color = (0, 255, 128)  # أخضر فاقع للكف المفتوح (وش اليد)
+                elif palm_state == "BACK_BLOCKED" and (all_open or four_open):
+                    g_color = (0, 140, 255)  # برتقالي تحذيري عند إظهار ضهر اليد
+                else:
                     g_color = config.GESTURE_ACTION_MAP.get(current_gesture, {}).get("color", (0, 255, 128))
-                    self.draw_hand_skeleton(frame, hand_lms, color=g_color)
 
+                self.draw_hand_skeleton(frame, hand_lms, color=g_color)
                 self.cooldown_mgr.update_state(current_gesture)
 
                 # التحقق من شروط التفعيل وتنفيذ الأمر
@@ -475,11 +566,11 @@ class HandControllerApp:
                             else:
                                 self.feedback_mgr.play_feedback("trigger")
 
-                            print(f"  [⚡ تنفيذ أمر!] {emoji} {label:<24} ({int(score * 100)}%)")
+                            print(f"  [⚡ تنفيذ أمر!] {emoji} {label:<24} ({int(score * 100)}%) [وش اليد: Palm]")
             else:
                 self.cooldown_mgr.update_state("None")
 
-            self.draw_hud(frame, current_gesture, score, is_triggering)
+            self.draw_hud(frame, current_gesture, score, is_triggering, hand_name=hand_name, palm_state=palm_state)
 
             cv2.imshow(window_name, frame)
 
