@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.venv/
+venv/
+ENV/
+
+# Local binary models (auto-downloaded by script)
+gesture_recognizer.task
+hand_landmarker.task
+
+# IDEs
+.vscode/
+.idea/
