@@ -54,10 +54,12 @@ MIN_DETECTION_CONFIDENCE = 0.65
 MIN_TRACKING_CONFIDENCE = 0.65
 MIN_GESTURE_SCORE = 0.60
 
-# تفعيل شرط وش اليد (Palm Facing Camera) لحركة الكف المفتوح (Open_Palm)
-# عند تفعيله، لن يتم تنفيذ أمر الكف المفتوح (تشغيل/إيقاف الميديا) إلا عند إظهار وش اليد (Palm)
-# وسيتم حجب ومنع تنفيذه تماماً إذا كان المعروض ضهر اليد (Back of Hand)
-REQUIRE_PALM_FACING_FOR_OPEN_PALM = True
+# جهة تفعيل حركة الكف المفتوح (Open_Palm - تشغيل/إيقاف الميديا):
+# 'BACK'  -> تعمل بضهر اليد فقط (Back of Hand) [الوضع الافتراضي بناءً على طلبك]
+# 'FRONT' -> تعمل بوش اليد فقط (Palm / Front)
+# 'BOTH'  -> تعمل بالجهتين معاً (وش أو ضهر اليد) بدون أي حجب
+# [ملاحظة: يمكنك التبديل الفوري بين هذه الأوضاع في أي وقت بالضغط على حرف T في الكيبورد]
+OPEN_PALM_TRIGGER_SIDE = "BACK"
 
 # مسار نموذج MediaPipe Gesture Recognizer
 MODEL_PATH = os.path.join(BASE_DIR, "gesture_recognizer.task")

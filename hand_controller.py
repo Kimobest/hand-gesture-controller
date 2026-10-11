@@ -176,6 +176,9 @@ class HandControllerApp:
         self.last_action_emoji = "💤"
         self.last_action_time = 0.0
 
+        # وضع جهة تفعيل الكف ('BACK', 'FRONT', 'BOTH')
+        self.open_palm_mode = getattr(config, "OPEN_PALM_TRIGGER_SIDE", "BACK").upper()
+
         # اختيار الكاميرا التفاعلي عند بدء التشغيل
         if getattr(config, "PROMPT_CAMERA_ON_START", True) and len(self.available_cameras) > 1:
             self.select_camera_interactive()
@@ -286,6 +289,20 @@ class HandControllerApp:
         self.camera_toast_text = f"Failed to open Cam #{next_cam}"
         self.camera_toast_time = time.time()
 
+    def toggle_open_palm_mode(self):
+        """التبديل الفوري بين أوضاع الكف: ضهر اليد (BACK) -> وش اليد (FRONT) -> الجهتين (BOTH)"""
+        modes = ["BACK", "FRONT", "BOTH"]
+        idx = modes.index(self.open_palm_mode) if self.open_palm_mode in modes else 0
+        self.open_palm_mode = modes[(idx + 1) % len(modes)]
+        labels = {
+            "BACK": "ضهر اليد (Back of Hand)",
+            "FRONT": "وش اليد (Palm / Front)",
+            "BOTH": "الجهتين معاً (Both Sides)"
+        }
+        self.camera_toast_text = f"Mode: {self.open_palm_mode} ({labels[self.open_palm_mode]})"
+        self.camera_toast_time = time.time()
+        print(f"\n[🔄] تم تبديل وضع كف اليد فوراً إلى: {labels[self.open_palm_mode]}")
+
     def draw_hand_skeleton(self, frame, landmarks, color=(0, 255, 128)):
         """رسم هيكل اليد والمفاصل بخطوط متوهجة وتصميم عصري"""
         h, w, _ = frame.shape
@@ -307,11 +324,12 @@ class HandControllerApp:
             cv2.circle(frame, (cx, cy), radius, (255, 255, 255), -1, cv2.LINE_AA)
 
     @staticmethod
-    def check_palm_orientation(landmarks, handedness_label):
+    def get_hand_orientation(landmarks, mediapipe_handedness):
         """
-        حساب المتجه العمودي (Palm Normal Vector) لتحديد ما إذا كان وش اليد (Palm)
-        مواجهاً للكاميرا أو ضهر اليد (Back of Hand).
-        يعتمد على الجداء الاتجاهي (Cross Product) بين معصم اليد (0) ومفصل السبابة (5) ومفصل الخنصر (17).
+        حساب المتجه العمودي (Normal Vector) لتحديد ما إذا كان المعروض هو:
+        - 'FRONT' (وش اليد / Palm)
+        - 'BACK'  (ضهر اليد / Back of Hand)
+        مع مراعاة وضع المرآة الأفقي (cv2.flip) وانعكاس تصنيف اليدين.
         """
         v1_x = landmarks[5].x - landmarks[0].x
         v1_y = landmarks[5].y - landmarks[0].y
@@ -319,17 +337,22 @@ class HandControllerApp:
         v2_y = landmarks[17].y - landmarks[0].y
         cross_z = (v1_x * v2_y) - (v1_y * v2_x)
 
-        if handedness_label == "Right":
-            is_palm = cross_z > 0.0008
-        elif handedness_label == "Left":
-            is_palm = cross_z < -0.0008
+        # في وضع المرآة: MediaPipe 'Left' = اليد اليمنى الحقيقية، 'Right' = اليد اليسرى الحقيقية
+        if mediapipe_handedness == "Left":  # اليد اليمنى في المرآة
+            is_front = cross_z > 0.0005
+            is_back = cross_z < -0.0005
+        elif mediapipe_handedness == "Right":  # اليد اليسرى في المرآة
+            is_front = cross_z < -0.0005
+            is_back = cross_z > 0.0005
         else:
             if landmarks[4].x < landmarks[17].x:
-                is_palm = cross_z > 0.0008
+                is_front = cross_z > 0.0005
+                is_back = cross_z < -0.0005
             else:
-                is_palm = cross_z < -0.0008
+                is_front = cross_z < -0.0005
+                is_back = cross_z > 0.0005
 
-        return is_palm, cross_z
+        return ("FRONT" if is_front else ("BACK" if is_back else "UNKNOWN")), cross_z
 
     @staticmethod
     def are_fingers_open(landmarks):
@@ -347,8 +370,8 @@ class HandControllerApp:
         four_fingers = (index_ext and middle_ext and ring_ext and pinky_ext)
         return all_five, four_fingers
 
-    def draw_hud(self, frame, current_gesture, score, is_triggering, hand_name="", palm_state="NONE"):
-        """رسم واجهة تفاعلية شاشية مستقبلية (HUD Overlay) مع توضيح حالة وش اليد vs ضهر اليد"""
+    def draw_hud(self, frame, current_gesture, score, is_triggering, hand_name="", detected_side="UNKNOWN", is_matched=True):
+        """رسم واجهة تفاعلية شاشية مستقبلية (HUD Overlay) مع عرض وضع وش/ضهر اليد"""
         h, w, _ = frame.shape
 
         # الشريط العلوي والسفلي الشفاف
@@ -372,13 +395,14 @@ class HandControllerApp:
                         cv2.FONT_HERSHEY_DUPLEX, 0.75, color, 2, cv2.LINE_AA)
 
             sub_info = f"Conf: {int(score * 100)}%"
-            if palm_state == "PALM_FRONT":
-                sub_info += " | PALM (Front) [OK]"
+            if current_gesture == "Open_Palm":
+                side_lbl = "BACK OF HAND" if detected_side == "BACK" else "PALM (FRONT)"
+                sub_info += f" | {side_lbl} [ACTIVE]"
             cv2.putText(frame, sub_info, (20, 58),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (190, 190, 200), 1, cv2.LINE_AA)
 
             # شريط مؤقت الـ Cooldown
-            bar_x, bar_y, bar_w, bar_h = 320, 44, 150, 12
+            bar_x, bar_y, bar_w, bar_h = 340, 44, 140, 12
             cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (40, 40, 50), -1)
             fill_w = int(bar_w * cooldown_ratio)
             bar_color = (0, 255, 128) if cooldown_ratio >= 1.0 else (0, 140, 255)
@@ -393,34 +417,40 @@ class HandControllerApp:
             if is_triggering:
                 cv2.rectangle(frame, (0, 0), (w, h), color, 6)
         else:
-            if palm_state == "BACK_BLOCKED":
-                cv2.putText(frame, "BACK OF HAND (Blocked - Show Palm)", (20, 32),
+            if not is_matched and detected_side in ["BACK", "FRONT"]:
+                expected = "BACK of hand" if self.open_palm_mode == "BACK" else "PALM (front)"
+                cv2.putText(frame, f"BLOCKED: Show {expected}", (20, 32),
                             cv2.FONT_HERSHEY_DUPLEX, 0.62, (0, 140, 255), 2, cv2.LINE_AA)
-                cv2.putText(frame, "Ignored: Back of hand facing cam. Turn hand to PALM.", (20, 58),
+                cv2.putText(frame, f"Detected: {detected_side} | Press [T] to change Palm Mode", (20, 58),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 200, 255), 1, cv2.LINE_AA)
-            elif palm_state == "PALM_FRONT":
-                cv2.putText(frame, "PALM DETECTED | Ready for action", (20, 42),
+            elif detected_side in ["BACK", "FRONT"]:
+                side_lbl = "BACK OF HAND" if detected_side == "BACK" else "PALM"
+                cv2.putText(frame, f"{side_lbl} DETECTED | Ready", (20, 42),
                             cv2.FONT_HERSHEY_DUPLEX, 0.65, (0, 255, 128), 2, cv2.LINE_AA)
             else:
                 cv2.putText(frame, "READY | Show Hand Gesture", (20, 42),
                             cv2.FONT_HERSHEY_DUPLEX, 0.65, (160, 160, 170), 2, cv2.LINE_AA)
 
-        # معدل الإطارات (FPS) وحالة الكاميرا
-        cv2.putText(frame, f"FPS: {int(self.fps)}", (w - 110, 30),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.65, (0, 255, 255), 1, cv2.LINE_AA)
+        # معدل الإطارات (FPS) وحالة الكاميرا ووضع الكف
+        cv2.putText(frame, f"FPS: {int(self.fps)}", (w - 110, 26),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.60, (0, 255, 255), 1, cv2.LINE_AA)
+
+        mode_badge = f"PALM: {self.open_palm_mode}"
+        cv2.putText(frame, mode_badge, (w - 145, 48),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 255, 180), 1, cv2.LINE_AA)
 
         cam_text = f"CAM: #{self.camera_index}"
-        cv2.putText(frame, cam_text, (w - 130, 58),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 220, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, cam_text, (w - 145, 66),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (100, 220, 255), 1, cv2.LINE_AA)
 
         # الشريط السفلي
         last_act = f"Last Action: {self.last_action_emoji} {self.last_action_label}"
         cv2.putText(frame, last_act, (20, h - 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 220, 100), 1, cv2.LINE_AA)
 
-        hint_text = "[C] Switch Cam | [Q] Exit"
-        cv2.putText(frame, hint_text, (w - 240, h - 16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (160, 160, 170), 1, cv2.LINE_AA)
+        hint_text = "[C] Switch Cam | [T] Mode (BACK/FRONT/BOTH) | [Q] Exit"
+        cv2.putText(frame, hint_text, (w - 380, h - 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 170), 1, cv2.LINE_AA)
 
         # شارة تنفيذ الأمر الحية في منتصف الشاشة (Active Action Banner)
         if time.time() - self.last_action_time < 0.6:
@@ -491,7 +521,8 @@ class HandControllerApp:
             score = 0.0
             is_triggering = False
             hand_name = "Right"
-            palm_state = "NONE"
+            detected_side = "UNKNOWN"
+            is_matched_side = True
 
             if recognition_result.hand_landmarks and len(recognition_result.hand_landmarks) > 0:
                 hand_lms = recognition_result.hand_landmarks[0]
@@ -499,10 +530,17 @@ class HandControllerApp:
                 if recognition_result.handedness and len(recognition_result.handedness) > 0:
                     hand_name = recognition_result.handedness[0][0].category_name
 
-                # فحص اتجاه اليد (وش اليد vs ضهر اليد) وفحص امتداد الأصابع
-                is_palm, cross_z = self.check_palm_orientation(hand_lms, hand_name)
+                # فحص اتجاه اليد (FRONT vs BACK) وفحص امتداد الأصابع
+                detected_side, cross_z = self.get_hand_orientation(hand_lms, hand_name)
                 all_open, four_open = self.are_fingers_open(hand_lms)
-                palm_state = "PALM_FRONT" if is_palm else "BACK_BLOCKED"
+
+                # مطابقة اتجاه اليد مع الوضع المختار (BACK أو FRONT أو BOTH)
+                if self.open_palm_mode == "BOTH":
+                    is_matched_side = True
+                elif self.open_palm_mode == "BACK":
+                    is_matched_side = (detected_side == "BACK")
+                else:  # FRONT
+                    is_matched_side = (detected_side == "FRONT")
 
                 # قراءة الحركة من نموذج MediaPipe
                 if recognition_result.gestures and len(recognition_result.gestures) > 0:
@@ -510,31 +548,26 @@ class HandControllerApp:
                     current_gesture = top_gesture.category_name
                     score = top_gesture.score
 
-                # تدقيق حركة الكف المفتوح (Open_Palm) لتعمل فقط بوش اليد
-                require_palm = getattr(config, "REQUIRE_PALM_FACING_FOR_OPEN_PALM", True)
-
+                # تدقيق حركة الكف المفتوح (Open_Palm)
                 if current_gesture == "Open_Palm":
-                    if require_palm and not is_palm:
-                        # تم التعرف على الكف لكن المعروض هو ضهر اليد -> حجب فوري للأمر
+                    if not is_matched_side:
+                        # اليد غير مطابقة للوضع المختار -> حجب فوري للأمر
                         current_gesture = "None"
                         score = 0.0
-                    elif is_palm:
-                        # وش اليد مواجه للكاميرا -> تأكيد الحركة بنسبة ثقة عالية
+                    else:
                         score = max(score, 0.95)
-                elif (all_open or four_open) and is_palm:
-                    # الأصابع مفرودة ووش اليد مواجه للكاميرا -> تفعيل Open_Palm حتى لو تردد النموذج
+                elif (all_open or four_open) and is_matched_side:
                     current_gesture = "Open_Palm"
                     score = 0.95
-                elif (all_open or four_open) and not is_palm and require_palm:
-                    # الأصابع مفرودة بضهر اليد -> حجب كامل
+                elif (all_open or four_open) and not is_matched_side:
                     current_gesture = "None"
                     score = 0.0
 
                 # تحديد لون رسم هيكل اليد
                 if current_gesture == "Open_Palm":
-                    g_color = (0, 255, 128)  # أخضر فاقع للكف المفتوح (وش اليد)
-                elif palm_state == "BACK_BLOCKED" and (all_open or four_open):
-                    g_color = (0, 140, 255)  # برتقالي تحذيري عند إظهار ضهر اليد
+                    g_color = (0, 255, 128)  # أخضر فاقع للكف المفتوح المفعل
+                elif not is_matched_side and (all_open or four_open):
+                    g_color = (0, 140, 255)  # برتقالي تحذيري عند إظهار الجهة المحجوبة
                 else:
                     g_color = config.GESTURE_ACTION_MAP.get(current_gesture, {}).get("color", (0, 255, 128))
 
@@ -566,11 +599,13 @@ class HandControllerApp:
                             else:
                                 self.feedback_mgr.play_feedback("trigger")
 
-                            print(f"  [⚡ تنفيذ أمر!] {emoji} {label:<24} ({int(score * 100)}%) [وش اليد: Palm]")
+                            side_name = "ضهر اليد (Back)" if detected_side == "BACK" else "وش اليد (Palm)"
+                            print(f"  [⚡ تنفيذ أمر!] {emoji} {label:<24} ({int(score * 100)}%) [{side_name}]")
             else:
                 self.cooldown_mgr.update_state("None")
 
-            self.draw_hud(frame, current_gesture, score, is_triggering, hand_name=hand_name, palm_state=palm_state)
+            self.draw_hud(frame, current_gesture, score, is_triggering,
+                          hand_name=hand_name, detected_side=detected_side, is_matched=is_matched_side)
 
             cv2.imshow(window_name, frame)
 
@@ -580,6 +615,8 @@ class HandControllerApp:
                 break
             elif key == ord('c') or key == ord('C'):
                 self.switch_camera()
+            elif key == ord('t') or key == ord('T'):
+                self.toggle_open_palm_mode()
 
         if self.cap:
             self.cap.release()
